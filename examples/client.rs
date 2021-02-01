@@ -5,8 +5,8 @@ use std::error::Error;
 use std::io::{self, Write}; // Use the tokio variant later
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use echo_server::{Serialize, Deserialize, Packet};
-use echo_server::request::Command; 
+use chat_server::{Serialize, Deserialize, Packet};
+use chat_server::request::Command; 
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
