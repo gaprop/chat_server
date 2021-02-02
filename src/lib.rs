@@ -1,8 +1,8 @@
-// use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use crate::request::Command;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+// use crate::request::Command;
 
 pub mod request {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::net::SocketAddr;
     use crate::{Serialize, Deserialize, Packet};
 
     #[derive(Debug)]
@@ -37,45 +37,8 @@ pub mod request {
         }
     }
 
-    // Remove magic number
-    impl Serialize for SocketAddr {
-        fn serialize(&self) -> Vec<Packet> {
-            match &self {
-                SocketAddr::V4(addr) => {
-                    let octets     = addr.ip().octets();
-                    let port_bytes = addr.port().to_be_bytes();
-                    let length     = octets.len() + port_bytes.len() + 1; // One more because of addr type
-                    
-                    let mut data = Vec::new();
-                    for byte in octets.iter() {
-                        data.push(*byte);
-                    }
-                    for byte in port_bytes.iter() {
-                        data.push(*byte);
-                    }
 
-                    vec![Packet { amount: length as u32, data_type: 0, data  }]
-                },
-                SocketAddr::V6(addr) => {
-                    let octets     = addr.ip().octets();
-                    let port_bytes = addr.port().to_be_bytes();
-                    let length     = octets.len() + port_bytes.len() + 1; // One more because of addr type
-                    
-                    let mut data = Vec::new();
-                    for byte in octets.iter() {
-                        data.push(*byte);
-                    }
-                    for byte in port_bytes.iter() {
-                        data.push(*byte);
-                    }
-
-                    vec![Packet { amount: length as u32, data_type: 1, data }]
-                },
-            }
-        }
-    }
-
-    impl Deserialize for Vec<Packet> {
+    impl Deserialize<Command> for Vec<Packet> {
         fn deserialize(&self) -> Option<Command> {
             let packets = &mut self.iter();
             let packet = packets.next()?;
@@ -83,7 +46,7 @@ pub mod request {
             match packet.data_type {
                 0 => {
                     let nickname = String::from_utf8(packet.data.to_vec()).ok()?;
-                    let addr     = deserialize_ip(packets.next()?)?;
+                    let addr     = packets.next()?.deserialize()?;
                     Some(Command::Login(nickname, addr))
                 },
                 1 => Some(Command::Logout),
@@ -103,49 +66,11 @@ pub mod request {
     }
 
 
-    // This function is really bad
-    fn deserialize_ip(packet: &Packet) -> Option<SocketAddr> {
-        match packet.data_type {
-            // For ip v4
-            0 => {
-                let ip = packet.data.to_vec();
-                let port = &packet.data;
-                let mut ip = ip.iter().take(4);
-                let mut port = port.iter().skip(4).take(2);
-                let port = u16::from_be_bytes([*port.next()?, *port.next()?]);
-                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(*ip.next()?, 
-                                                                    *ip.next()?, 
-                                                                    *ip.next()?, 
-                                                                    *ip.next()?)), port);
-                Some(addr)
-            }
-            1 => {
-                let mut data = packet.data.iter();
-                let mut ip = Vec::new();
-                for _ in 0..8 {
-                    ip.push(u16::from_be_bytes([*data.next()?, *data.next()?]));
-                }
-                let mut ip = ip.iter();
-                let port = u16::from_be_bytes([*data.next()?, *data.next()?]);
-                let addr = SocketAddr::new(IpAddr::V6(
-                        Ipv6Addr::new(*ip.next()?, 
-                                      *ip.next()?, 
-                                      *ip.next()?, 
-                                      *ip.next()?, 
-                                      *ip.next()?, 
-                                      *ip.next()?, 
-                                      *ip.next()?, 
-                                      *ip.next()?)), port);
-                Some(addr)
-            }
-            _ => None
-        }
-    }
 }
 
 pub mod respond {
     use std::net::SocketAddr;
-    use crate::{Packet, Serialize};
+    use crate::{Packet, Serialize, Deserialize};
 
     #[derive(Debug)]
     pub enum Response {
@@ -195,6 +120,28 @@ pub mod respond {
             }
         }
     }
+
+    impl Deserialize<Response> for Vec<Packet> {
+        fn deserialize(&self) -> Option<Response> {
+            let packet = self.get(0)?;
+            match packet.data_type {
+                0 => Some(Response::Login),
+                1 => {
+                    let mut users = Vec::with_capacity(self.len());
+                    let mut packets = self.iter();
+                    while let Some(user) = packets.next() {
+                        let name = String::from_utf8(user.data.to_vec()).ok()?;
+                        let addr = packets.next()?.deserialize()?;
+                        users.push((name, addr));
+                    }
+                    Some(Response::Search(users))
+                },
+                2 => Some(Response::Logout),
+                3 => Some(Response::Exit),
+                _ => None,
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -221,13 +168,91 @@ impl Packet {
     }
 }
 
+// This function is really bad
+impl Deserialize<SocketAddr> for Packet {
+    fn deserialize(&self) -> Option<SocketAddr> {
+        let packet = self;
+        match packet.data_type {
+            // For ip v4
+            0 => {
+                let ip = packet.data.to_vec();
+                let port = &packet.data;
+                let mut ip = ip.iter().take(4);
+                let mut port = port.iter().skip(4).take(2);
+                let port = u16::from_be_bytes([*port.next()?, *port.next()?]);
+                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(*ip.next()?, 
+                                                                    *ip.next()?, 
+                                                                    *ip.next()?, 
+                                                                    *ip.next()?)), port);
+                Some(addr)
+            }
+            1 => {
+                let mut data = packet.data.iter();
+                let mut ip = Vec::new();
+                for _ in 0..8 {
+                    ip.push(u16::from_be_bytes([*data.next()?, *data.next()?]));
+                }
+                let mut ip = ip.iter();
+                let port = u16::from_be_bytes([*data.next()?, *data.next()?]);
+                let addr = SocketAddr::new(IpAddr::V6(
+                        Ipv6Addr::new(*ip.next()?, 
+                                      *ip.next()?, 
+                                      *ip.next()?, 
+                                      *ip.next()?, 
+                                      *ip.next()?, 
+                                      *ip.next()?, 
+                                      *ip.next()?, 
+                                      *ip.next()?)), port);
+                Some(addr)
+            }
+            _ => None
+        }
+    }
+}
+
+// Remove magic number
+impl Serialize for SocketAddr {
+    fn serialize(&self) -> Vec<Packet> {
+        match &self {
+            SocketAddr::V4(addr) => {
+                let octets     = addr.ip().octets();
+                let port_bytes = addr.port().to_be_bytes();
+                let length     = octets.len() + port_bytes.len() + 1; // One more because of addr type
+                
+                let mut data = Vec::new();
+                for byte in octets.iter() {
+                    data.push(*byte);
+                }
+                for byte in port_bytes.iter() {
+                    data.push(*byte);
+                }
+
+                vec![Packet { amount: length as u32, data_type: 0, data  }]
+            },
+            SocketAddr::V6(addr) => {
+                let octets     = addr.ip().octets();
+                let port_bytes = addr.port().to_be_bytes();
+                let length     = octets.len() + port_bytes.len() + 1; // One more because of addr type
+                
+                let mut data = Vec::new();
+                for byte in octets.iter() {
+                    data.push(*byte);
+                }
+                for byte in port_bytes.iter() {
+                    data.push(*byte);
+                }
+
+                vec![Packet { amount: length as u32, data_type: 1, data }]
+            },
+        }
+    }
+}
+
 pub trait Serialize {
     fn serialize(&self) -> Vec<Packet>;
 }
 
-pub trait Deserialize {
-    fn deserialize(&self) -> Option<Command>;
+pub trait Deserialize<T> {
+    fn deserialize(&self) -> Option<T>;
 }
-
-
 

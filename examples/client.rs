@@ -6,6 +6,7 @@ use std::io::{self, Write}; // Use the tokio variant later
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use chat_server::{Serialize, Deserialize, Packet};
+use chat_server::respond::Response;
 use chat_server::request::Command; 
 
 #[tokio::main]
@@ -29,9 +30,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // respond
         let data = response(&mut stream).await?;
-        println!("{:?}", data);
-        let data = data.deserialize();
-        println!("{:?}", data);
+        let data: Option<Response> = data.deserialize();
+
+        match res {
+            None => (),
+            Some(Response::Login)  => println!("Logged in"),
+            Some(Response::Logout) => println!("Logged out"),
+            Some(Response::Exit)   => println!("You exited"), // Will not show
+            Some(Response::Search(users)) => {
+                println!("-------------------");
+                users.iter()
+                    .for_each(|(name, addr)| {
+                        println!("name: {}", name);
+                        println!("Address: {}", addr);
+                        println!("-------------------");
+                    })
+            },
+        }
     }
     Ok(())
 }
@@ -70,9 +85,6 @@ fn string_to_command(string: String) -> Option<Command> {
         _              => None,
     }
 }
-
-// async fn request(stream: &TcpStream) -> Result<(), Box<dyn Error>> {
-// } 
 
 // NOTE: dry code, is also in main
 async fn response(stream: &mut TcpStream) -> Result<Vec<Packet>, String> {
