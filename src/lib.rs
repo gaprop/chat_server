@@ -1,38 +1,57 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 // use crate::request::Command;
 
+type Msg = String;
+type Nickname = String;
+
 pub mod request {
     use std::net::SocketAddr;
-    use crate::{Serialize, Deserialize, Packet};
+    use crate::{Serialize, Deserialize, Packet, to_packet, Nickname, Msg};
 
     #[derive(Debug)]
     pub enum Command {
-        Login(String, SocketAddr),
+        Login(Nickname, SocketAddr),
         Logout,
-        Search(String),
+        Search(Nickname),
         Exit,
+        Message(Nickname, Msg),
+        Show,
     }
 
     impl Serialize for Command {
         fn serialize(&self) -> Vec<Packet> {
             match &self {
-                Command::Login(string, addr) => {
-                    let mut packet = to_bytes(string.bytes().len(), 0);
-                    for byte in string.bytes() {
+                Command::Login(name, addr) => {
+                    let mut packet = to_packet(name.bytes().len(), 0);
+                    for byte in name.bytes() {
                         packet.data.push(byte);
                     }
                     // packet.data.append(&mut addr.serialize());
                     vec![packet, addr.serialize().pop().unwrap()]
                 },
-                Command::Logout => vec![to_bytes(0, 1)],
+                Command::Logout => vec![to_packet(0, 1)],
                 Command::Search(string) => {
-                    let mut packet = to_bytes(string.bytes().len(), 2);
+                    let mut packet = to_packet(string.bytes().len(), 2);
                     for byte in string.bytes() {
                         packet.data.push(byte);
                     }
                     vec![packet]
                 },
-                Command::Exit => vec![to_bytes(0, 3)],
+                Command::Exit => vec![to_packet(0, 3)],
+                Command::Message(name, msg) => {
+                    let mut name_packet = to_packet(name.bytes().len(), 4);
+                    for byte in name.bytes() {
+                        name_packet.data.push(byte);
+                    }
+
+                    let mut msg_packet = to_packet(msg.bytes().len(), 4);
+                    for byte in msg.bytes() {
+                        msg_packet.data.push(byte);
+                    }
+
+                    vec![name_packet, msg_packet]
+                },
+                Command::Show => vec![to_packet(0, 5)],
             }
         }
     }
@@ -45,49 +64,54 @@ pub mod request {
 
             match packet.data_type {
                 0 => {
-                    let nickname = String::from_utf8(packet.data.to_vec()).ok()?;
-                    let addr     = packets.next()?.deserialize()?;
-                    Some(Command::Login(nickname, addr))
+                    let name = String::from_utf8(packet.data.to_vec()).ok()?;
+                    let addr = packets.next()?.deserialize()?;
+                    Some(Command::Login(name, addr))
                 },
                 1 => Some(Command::Logout),
                 2 => {
-                    let nickname = String::from_utf8(packet.data.to_vec()).ok()?;
-                    Some(Command::Search(nickname))
+                    let name = String::from_utf8(packet.data.to_vec()).ok()?;
+                    Some(Command::Search(name))
                 },
                 3 => Some(Command::Exit),
+                4 => {
+                    let name = String::from_utf8(packet.data.to_vec()).ok()?;
+                    let msg = String::from_utf8(packets.next()?.data.to_vec()).ok()?;
+                    Some(Command::Message(name, msg))
+                },
+                5 => Some(Command::Show),
                 _ => None,
             }
         }
     }
 
-    fn to_bytes(size: usize, num: u8) -> Packet {
-        let size = size + 1;
-        Packet { amount: size as u32, data: Vec::new(), data_type: num }
-    }
 
 
 }
 
 pub mod respond {
     use std::net::SocketAddr;
-    use crate::{Packet, Serialize, Deserialize};
+    use crate::{Serialize, Deserialize, Packet, to_packet, Nickname, Msg};
 
     #[derive(Debug)]
     pub enum Response {
-        Login,
-        Search(Vec<(String, SocketAddr)>),
+        Login(Nickname, SocketAddr),
+        Search(Vec<(Nickname, SocketAddr)>),
         Logout,
         Exit,
+        Message(Nickname, Msg, SocketAddr),
     }
 
     impl Serialize for Response {
         fn serialize(&self) -> Vec<Packet> {
             match self {
-                Response::Login => vec![Packet {
-                    amount: 1,
-                    data_type: 0,
-                    data: Vec::new(),
-                }],
+                Response::Login(name, addr) => {
+                    let mut packet = to_packet(name.bytes().len(), 0);
+                    for byte in name.bytes() {
+                        packet.data.push(byte);
+                    }
+                    vec![packet, addr.serialize().pop().unwrap()]
+                },
                 Response::Search(users) => users.iter()
                     .flat_map(|(name, addr)| {
                         let name: Vec<u8> = name.bytes().collect();
@@ -108,6 +132,19 @@ pub mod respond {
                     data_type: 3,
                     data: Vec::new(),
                 }],
+                Response::Message(name, msg, addr) => {
+                    let mut name_packet = to_packet(name.bytes().len(), 4);
+                    for byte in name.bytes() {
+                        name_packet.data.push(byte);
+                    }
+
+                    let mut msg_packet = to_packet(msg.bytes().len(), 4);
+                    for byte in msg.bytes() {
+                        msg_packet.data.push(byte);
+                    }
+
+                    vec![name_packet, msg_packet, addr.serialize().pop().unwrap()]
+                }
             }
         }
     }
@@ -125,7 +162,13 @@ pub mod respond {
         fn deserialize(&self) -> Option<Response> {
             let packet = self.get(0)?;
             match packet.data_type {
-                0 => Some(Response::Login),
+                0 => {
+                    let mut packets = self.iter();
+                    packets.next();
+                    let name = String::from_utf8(packet.data.to_vec()).ok()?;
+                    let addr = packets.next()?.deserialize()?;
+                    Some(Response::Login(name, addr))
+                },
                 1 => {
                     let mut users = Vec::with_capacity(self.len());
                     let mut packets = self.iter();
@@ -138,6 +181,12 @@ pub mod respond {
                 },
                 2 => Some(Response::Logout),
                 3 => Some(Response::Exit),
+                4 => {
+                    let name = String::from_utf8(self.get(0)?.data.to_vec()).ok()?;
+                    let msg = String::from_utf8(self.get(1)?.data.to_vec()).ok()?;
+                    let addr = self.get(2)?.deserialize()?;
+                    Some(Response::Message(name, msg, addr))
+                }
                 _ => None,
             }
         }
@@ -246,6 +295,11 @@ impl Serialize for SocketAddr {
             },
         }
     }
+}
+
+fn to_packet(size: usize, num: u8) -> Packet {
+    let size = size + 1;
+    Packet { amount: size as u32, data: Vec::new(), data_type: num }
 }
 
 pub trait Serialize {

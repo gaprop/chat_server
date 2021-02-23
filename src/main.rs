@@ -20,8 +20,8 @@ async fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6142").await.unwrap();
 
     loop {
-        let (socket, _) = listener.accept().await?;
-        // println!("Client connected from {}", )
+        let (socket, addr) = listener.accept().await?;
+        println!("Client connected from {}", addr);
         let users = users.clone();
 
         tokio::spawn(async move {
@@ -54,8 +54,8 @@ fn handle_command(command: Command,
             if users.contains_key(&name) { None }
             else {
                 curr_user.set(Some((name.clone(), addr)));
-                users.insert(name, addr);
-                Some(Response::Login)
+                users.insert(name.clone(), addr);
+                Some(Response::Login(name, addr))
             }
         },
         Command::Search(name) => {
@@ -87,6 +87,14 @@ fn handle_command(command: Command,
             }
             Some(Response::Exit)
         },
+        Command::Message(name, msg) => {
+            let users = users.lock().unwrap();
+            match users.get(&name) {
+                Some(addr) => Some(Response::Message(name, msg, *addr)),
+                None => None,
+            }
+        },
+        Command::Show => None,
     }
 }
 
@@ -99,6 +107,7 @@ async fn response(socket: &mut TcpStream, res: Option<Response>) -> Result<(), B
     Ok(())
 }
 
+// NOTE: DRY CODE!!
 async fn request(socket: &mut TcpStream) -> Result<Vec<Packet>, Box<dyn Error>> {
     socket.readable().await?;
     let mut bytes = Vec::new();
